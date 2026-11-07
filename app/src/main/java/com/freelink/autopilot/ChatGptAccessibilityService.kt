@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.os.SystemClock
+import android.graphics.Rect
+import kotlin.math.abs
 
 /**
  * Automates the official ChatGPT UI only while it is in the foreground.
@@ -63,7 +65,9 @@ class ChatGptAccessibilityService : AccessibilityService() {
         // Do not guess or press Enter. Keep observing accessibility events until
         // ChatGPT exposes its enabled send arrow after the composer updates.
         if (awaitingSendArrow && !sentForThisGeneration && !generating) {
+            val edit = findEditable(root)
             val send = findSendButton(root)
+                ?: if (edit != null) findSpatialSendButton(root, edit) else null
             if (send != null && send.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 sentForThisGeneration = true
                 awaitingSendArrow = false
@@ -127,6 +131,50 @@ class ChatGptAccessibilityService : AccessibilityService() {
             child.recycle()
         }
         return null
+    }
+
+    /**
+     * Fallback for ChatGPT builds where the send arrow has no accessible label.
+     * The current mobile composer places the send arrow after the microphone,
+     * so choose the rightmost enabled clickable control on the composer row.
+     */
+    private fun findSpatialSendButton(root: AccessibilityNodeInfo, edit: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val editBounds = Rect()
+        edit.getBoundsInScreen(editBounds)
+        if (editBounds.isEmpty) return null
+        val density = resources.displayMetrics.density
+        val rowTolerance = (64 * density).toInt()
+        val rightSearch = (180 * density).toInt()
+        var best: AccessibilityNodeInfo? = null
+        var bestRight = Int.MIN_VALUE
+
+        fun visit(node: AccessibilityNodeInfo) {
+            val desc = (node.contentDescription?.toString() ?: "").lowercase()
+            val text = (node.text?.toString() ?: "").lowercase()
+            val resource = (node.viewIdResourceName ?: "").lowercase()
+            val combined = desc + " " + text + " " + resource
+            val voiceControl = listOf("microphone", "mic", "voice", "диктофон", "микрофон").any { combined.contains(it) }
+            if (node.isClickable && node.isEnabled && !node.isEditable && !voiceControl) {
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                val sameRow = abs(bounds.centerY() - editBounds.centerY()) <= rowTolerance
+                val nearEnd = bounds.centerX() >= editBounds.right - rightSearch
+                val sensibleSize = bounds.width() in (20 * density).toInt()..(120 * density).toInt() &&
+                    bounds.height() in (20 * density).toInt()..(120 * density).toInt()
+                if (!bounds.isEmpty && sameRow && nearEnd && sensibleSize && bounds.right > bestRight) {
+                    best?.recycle()
+                    best = AccessibilityNodeInfo.obtain(node)
+                    bestRight = bounds.right
+                }
+            }
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                visit(child)
+                child.recycle()
+            }
+        }
+        visit(root)
+        return best
     }
 
     override fun onInterrupt() {
