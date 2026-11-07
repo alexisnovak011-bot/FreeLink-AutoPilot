@@ -66,8 +66,7 @@ class ChatGptAccessibilityService : AccessibilityService() {
         // ChatGPT exposes its enabled send arrow after the composer updates.
         if (awaitingSendArrow && !sentForThisGeneration && !generating) {
             val edit = findEditable(root)
-            val send = findSendButton(root)
-                ?: if (edit != null) findSpatialSendButton(root, edit) else null
+            val send = if (edit != null) findSpatialSendButton(root, edit) else null
             if (send != null && send.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 sentForThisGeneration = true
                 awaitingSendArrow = false
@@ -114,29 +113,9 @@ class ChatGptAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findSendButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val desc = (node.contentDescription?.toString() ?: "").lowercase()
-        val text = (node.text?.toString() ?: "").lowercase()
-        val resource = (node.viewIdResourceName ?: "").lowercase()
-        val labelMatches = listOf(
-            "send", "отправ", "submit", "послать"
-        ).any { desc.contains(it) || text.contains(it) || resource.contains(it) }
-
-        if (labelMatches && node.isClickable && node.isEnabled) return node
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findSendButton(child)
-            if (found != null) return found
-            child.recycle()
-        }
-        return null
-    }
-
     /**
-     * Fallback for ChatGPT builds where the send arrow has no accessible label.
-     * The current mobile composer places the send arrow after the microphone,
-     * so choose the rightmost enabled clickable control on the composer row.
+     * Locate the send arrow only by geometry, never by text or description.
+     * Choose the outermost enabled control at the end of the composer row.
      */
     private fun findSpatialSendButton(root: AccessibilityNodeInfo, edit: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val editBounds = Rect()
@@ -144,24 +123,20 @@ class ChatGptAccessibilityService : AccessibilityService() {
         if (editBounds.isEmpty) return null
         val density = resources.displayMetrics.density
         val rowTolerance = (64 * density).toInt()
-        val rightSearch = (180 * density).toInt()
+        val horizontalSearch = (220 * density).toInt()
         var best: AccessibilityNodeInfo? = null
         var bestRight = Int.MIN_VALUE
 
         fun visit(node: AccessibilityNodeInfo) {
-            val desc = (node.contentDescription?.toString() ?: "").lowercase()
-            val text = (node.text?.toString() ?: "").lowercase()
-            val resource = (node.viewIdResourceName ?: "").lowercase()
-            val combined = desc + " " + text + " " + resource
-            val voiceControl = listOf("microphone", "mic", "voice", "диктофон", "микрофон").any { combined.contains(it) }
-            if (node.isClickable && node.isEnabled && !node.isEditable && !voiceControl) {
+            if (node.isClickable && node.isEnabled && !node.isEditable) {
                 val bounds = Rect()
                 node.getBoundsInScreen(bounds)
                 val sameRow = abs(bounds.centerY() - editBounds.centerY()) <= rowTolerance
-                val nearEnd = bounds.centerX() >= editBounds.right - rightSearch
+                val nearComposer = bounds.centerX() >= editBounds.left - horizontalSearch &&
+                    bounds.centerX() <= editBounds.right + horizontalSearch
                 val sensibleSize = bounds.width() in (20 * density).toInt()..(120 * density).toInt() &&
                     bounds.height() in (20 * density).toInt()..(120 * density).toInt()
-                if (!bounds.isEmpty && sameRow && nearEnd && sensibleSize && bounds.right > bestRight) {
+                if (!bounds.isEmpty && sameRow && nearComposer && sensibleSize && bounds.right > bestRight) {
                     best?.recycle()
                     best = AccessibilityNodeInfo.obtain(node)
                     bestRight = bounds.right
