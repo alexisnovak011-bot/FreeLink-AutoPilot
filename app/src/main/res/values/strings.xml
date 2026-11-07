@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">FreeLink AutoPilot</string>
+    <string name="accessibility_description">Отслеживает завершение ответа в открытом приложении ChatGPT и пытается отправить точку.</string>
+</resources>
